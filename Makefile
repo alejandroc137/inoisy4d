@@ -17,7 +17,7 @@ OBJ_DIR = $(CURDIR)/obj
 COPTS     = -g -Wall -O2 -Wformat-overflow
 CINCLUDES = -I$(HYPRE_DIR)/include -I$(INC_DIR) -I$(GSL_DIR)/include
 CDEFS     = -DHAVE_CONFIG_H -DHYPRE_TIMING
-CFLAGS    = $(COPTS) $(CINCLUDES) $(CDEFS)
+CFLAGS    = $(COPTS) $(CINCLUDES) $(CDEFS) -include stdio.h
 
 LINKOPTS = $(COPTS)
 LDFLAGS  = -L$(HYPRE_DIR)/lib -L$(GSL_DIR)/lib

@@ -29,7 +29,7 @@ static void solve_once(HYPRE_SStructMatrix A, HYPRE_SStructVector b,
   HYPRE_BoomerAMGCreate(&precond);
   HYPRE_BoomerAMGSetMaxIter(precond, 1);
   HYPRE_BoomerAMGSetTol(precond, 0.0);
-  HYPRE_BoomerAMGSetPrintLevel(precond, myid == 0 ? 1 : 0);
+  HYPRE_BoomerAMGSetPrintLevel(precond, 0);
 
   if (solver_id == 1) {
     /* PCG is kept as an option for constant-coefficient or explicitly
@@ -37,21 +37,39 @@ static void solve_once(HYPRE_SStructMatrix A, HYPRE_SStructVector b,
        variable-coefficient stencil is generally nonsymmetric. */
     HYPRE_ParCSRPCGCreate(MPI_COMM_WORLD, &solver);
     HYPRE_ParCSRPCGSetTol(solver, 1.0e-04);
-    HYPRE_ParCSRPCGSetPrintLevel(solver, myid == 0 ? 2 : 0);
+    HYPRE_ParCSRPCGSetPrintLevel(solver, 0);
     HYPRE_ParCSRPCGSetMaxIter(solver, 50);
     HYPRE_ParCSRPCGSetPrecond(solver, HYPRE_BoomerAMGSolve, HYPRE_BoomerAMGSetup, precond);
     HYPRE_ParCSRPCGSetup(solver, parA, parb, parx);
     HYPRE_ParCSRPCGSolve(solver, parA, parb, parx);
+    {
+      int num_iterations = 0;
+      double final_res_norm = 0.0;
+      HYPRE_ParCSRPCGGetNumIterations(solver, &num_iterations);
+      HYPRE_ParCSRPCGGetFinalRelativeResidualNorm(solver, &final_res_norm);
+      if (myid == 0)
+        printf("PCG iterations = %d, final relative residual = %.6e\n",
+               num_iterations, final_res_norm);
+    }
     HYPRE_ParCSRPCGDestroy(solver);
   } else {
     HYPRE_ParCSRGMRESCreate(MPI_COMM_WORLD, &solver);
     HYPRE_ParCSRGMRESSetTol(solver, 1.0e-04);
-    HYPRE_ParCSRGMRESSetPrintLevel(solver, myid == 0 ? 2 : 0);
+    HYPRE_ParCSRGMRESSetPrintLevel(solver, 0);
     HYPRE_ParCSRGMRESSetMaxIter(solver, 100);
     HYPRE_ParCSRGMRESSetKDim(solver, 30);
     HYPRE_ParCSRGMRESSetPrecond(solver, HYPRE_BoomerAMGSolve, HYPRE_BoomerAMGSetup, precond);
     HYPRE_ParCSRGMRESSetup(solver, parA, parb, parx);
     HYPRE_ParCSRGMRESSolve(solver, parA, parb, parx);
+    {
+      int num_iterations = 0;
+      double final_res_norm = 0.0;
+      HYPRE_ParCSRGMRESGetNumIterations(solver, &num_iterations);
+      HYPRE_ParCSRGMRESGetFinalRelativeResidualNorm(solver, &final_res_norm);
+      if (myid == 0)
+        printf("GMRES iterations = %d, final relative residual = %.6e\n",
+               num_iterations, final_res_norm);
+    }
     HYPRE_ParCSRGMRESDestroy(solver);
   }
 

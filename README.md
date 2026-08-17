@@ -1,4 +1,4 @@
-[![2607.16576](https://img.shields.io/badge/arXiv-2607.16576-b31b1b.svg)](https://arxiv.org/abs/2607.16576) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/alejandroc137/inoisy4d/License.txt) [![GitHub repo stars](https://img.shields.io/github/stars/alejandroc137/inoisy4d?style=social)](https://github.com/alejandroc137/inoisy4d)
+[![2607.16576](https://img.shields.io/badge/arXiv-2607.16576-b31b1b.svg)](https://arxiv.org/abs/2607.16576) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/RelAstroWFU/inoisy4d/License.txt) [![GitHub repo stars](https://img.shields.io/github/stars/RelAstroWFU/inoisy4d?style=social)](https://github.com/RelAstroWFU/inoisy4d)
 
 # inoisy+
 
@@ -30,7 +30,7 @@ We also request that inoisy+ modifications or extensions leading to a scientific
 <center> <em>Feel free to use images and movies produced with this code (with attribution) for your next presentation! </em> </center>
 
 _______
-![GitHub last commit](https://img.shields.io/github/last-commit/alejandroc137/inoisy4d?style=flat)
+![GitHub last commit](https://img.shields.io/github/last-commit/RelAstroWFU/inoisy4d?style=flat)
 _______
 
 ## Repository Layout
