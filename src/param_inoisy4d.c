@@ -60,9 +60,11 @@ static double torus_ar = 8.0;
 static double torus_az = 5.0;
 
 /* Jet geometry used only by the GRF correlations.  The jet transverse width is
-   jet_width + jet_opening*|z|. */
+   jet_width + jet_opening*|z|^jet_k, with coordinates in units of M.
+   jet_k=1 is conical; jet_k=0.5 is asymptotically parabolic. */
 static double jet_width = 2.5;
 static double jet_opening = 0.30;
+static double jet_k = 1.0;
 
 /* Composite-tensor controls.  If normalize_weights=0, the raw GRF is naturally
    concentrated in the torus and jet.  If normalize_weights=1, the weights only
@@ -135,6 +137,7 @@ void param_read_params(char* filename)
     read_double_if_exists("torus_az", &torus_az);
     read_double_if_exists("jet_width", &jet_width);
     read_double_if_exists("jet_opening", &jet_opening);
+    read_double_if_exists("jet_k", &jet_k);
     read_double_if_exists("blend_floor", &blend_floor);
     read_int_if_exists("normalize_weights", &normalize_weights);
 
@@ -162,6 +165,10 @@ void param_read_params(char* filename)
   torus_az = positive(torus_az);
   jet_width = positive(jet_width);
   jet_opening = fmax(0.0, jet_opening);
+  if (!isfinite(jet_k) || jet_k <= 0.0) {
+    fprintf(stderr, "Invalid jet_k: must be finite and greater than zero (got %.17g).\n", jet_k);
+    exit(EXIT_FAILURE);
+  }
   blend_floor = fmax(0.0, blend_floor);
   normalize_weights = normalize_weights ? 1 : 0;
 }
@@ -194,6 +201,7 @@ void param_write_params(char* filename)
   hdf5_write_single_val(&torus_az, "torus_az", H5T_IEEE_F64LE);
   hdf5_write_single_val(&jet_width, "jet_width", H5T_IEEE_F64LE);
   hdf5_write_single_val(&jet_opening, "jet_opening", H5T_IEEE_F64LE);
+  hdf5_write_single_val(&jet_k, "jet_k", H5T_IEEE_F64LE);
   hdf5_write_single_val(&blend_floor, "blend_floor", H5T_IEEE_F64LE);
   hdf5_write_single_val(&normalize_weights, "normalize_weights", H5T_STD_I32LE);
 
@@ -539,7 +547,9 @@ static double torus_weight(double x1, double x2, double x3)
 static double collimated_jet_weight(double x1, double x2, double x3)
 {
   const double rho = sqrt(x1*x1 + x2*x2);
-  const double width = fmax(jet_width + jet_opening*fabs(x3), LAMBDA_FLOOR);
+  const double height = fabs(x3);
+  const double profile = (jet_k == 1.0) ? height : pow(height, jet_k);
+  const double width = fmax(jet_width + jet_opening*profile, LAMBDA_FLOOR);
   return exp(-0.5 * rho*rho / (width*width));
 }
 
