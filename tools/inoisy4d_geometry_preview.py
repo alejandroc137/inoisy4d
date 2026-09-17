@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Preview the inoisy+ four-velocity and correlation tensor.
+"""Plot the inoisy+ four-velocity and correlation geometry, including Figure 2.
 
 This script mirrors the equations implemented in src/param_inoisy4d.c.  It is
 intended for rapid design of the disk/torus and jet correlation geometry before
 running the HYPRE solver.
+
+Figure 2 uses --layout xy-xz. Add --compare-k 1 to place the conical
+geometry beside --jet-k 0.58. Both layouts use the original manuscript style.
 
 Examples
 --------
@@ -26,7 +29,7 @@ python3 inoisy4d_geometry_preview.py \
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 import h5py
@@ -34,9 +37,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 plt.rcParams.update({
-    'font.size' : 14,                   # Set font size to 11pt
-    'axes.labelsize': 14,               # -> axis labels
-    'legend.fontsize': 12,              # -> legends
+    'font.size': 14,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'legend.fontsize': 12,
     'text.usetex': True,
     'text.latex.preamble': (            # LaTeX preamble
         r'\usepackage{lmodern}'
@@ -72,6 +77,7 @@ class Params:
     torus_az: float = 5.0
     jet_width: float = 2.5
     jet_opening: float = 0.30
+    jet_k: float = 1.0
     blend_floor: float = 1.0e-4
     normalize_weights: int = 0
 
@@ -106,6 +112,7 @@ def read_params(filename: str | None) -> Params:
     p.torus_az = positive(p.torus_az)
     p.jet_width = positive(p.jet_width)
     p.jet_opening = max(0.0, float(p.jet_opening))
+    p.jet_k = validate_jet_k(p.jet_k)
     p.blend_floor = max(0.0, float(p.blend_floor))
     p.normalize_weights = 1 if int(p.normalize_weights) else 0
     return p
@@ -313,9 +320,26 @@ def torus_weight(x: float, y: float, z: float, p: Params) -> float:
     return float(np.exp(-0.5 * (u * u + v * v)))
 
 
+def validate_jet_k(value: float) -> float:
+    k = float(value)
+    if not np.isfinite(k) or k <= 0.0:
+        raise ValueError("jet_k must be finite and strictly positive")
+    return k
+
+
+def jet_radius(z: float, p: Params) -> float:
+    """Gaussian jet width in M, with fixed reference length z_ref = M.
+
+    k=1 recovers the conical profile; k=0.5 is asymptotically parabolic.
+    The finite core width is retained at z=0 for all allowed k > 0.
+    """
+    k = validate_jet_k(p.jet_k)
+    return max(p.jet_width + p.jet_opening * abs(z) ** k, LAMBDA_FLOOR)
+
+
 def jet_weight(x: float, y: float, z: float, p: Params) -> float:
     rho = np.sqrt(x * x + y * y)
-    width = max(p.jet_width + p.jet_opening * abs(z), LAMBDA_FLOOR)
+    width = jet_radius(z, p)
     return float(np.exp(-0.5 * rho * rho / (width * width)))
 
 
@@ -448,9 +472,11 @@ def background_value(x: float, y: float, z: float, p: Params, name: str, vector:
     raise ValueError(f"unknown background '{name}'")
 
 
-def make_grid(plane: str, extent: float, n: int, fixed: float):
+def make_grid(plane: str, extent: float, n: int, fixed: float,
+              vertical_extent: float | None = None):
     a = np.linspace(-extent, extent, n)
-    b = np.linspace(-extent, extent, n)
+    vertical_extent = extent if vertical_extent is None else vertical_extent
+    b = np.linspace(-vertical_extent, vertical_extent, n)
     A, B = np.meshgrid(a, b, indexing="xy")
     if plane == "xy":
         X, Y, Z = A, B, np.full_like(A, fixed)
@@ -507,7 +533,8 @@ def default_arrow_mode(vector: str, requested: str) -> str:
     return "unit2d"
 
 def plot_preview(p: Params, plane: str, vector: str, background: str, extent: float, n: int,
-                 stride: int, fixed: float, outfile: str, arrow_mode: str, quiver_scale: float | None):
+                 stride: int, fixed: float, outfile: str, arrow_mode: str, quiver_scale: float | None,
+                 dpi: int = 300, formats: tuple[str, ...] = ()):
     A, B, X, Y, Z, labels, proj = make_grid(plane, extent, n, fixed)
     bg = np.empty_like(A)
     U = np.empty_like(A)
@@ -536,10 +563,43 @@ def plot_preview(p: Params, plane: str, vector: str, background: str, extent: fl
     ax.quiver(A[::s, ::s], B[::s, ::s], U[::s, ::s], V[::s, ::s], **quiver_kwargs)
     ax.set_xlabel(labels[0])
     ax.set_ylabel(labels[1])
-    #ax.set_title(f"{plane} slice, vector={vector}, background={background}")
-    fig.savefig(outfile, dpi=180)
-    print(f"wrote {outfile}")
+    _save_plot(fig, outfile, dpi=dpi, formats=formats)
     print(f"vector={vector}, arrow_mode={mode}, |vector| range = [{norm_min:.6g}, {norm_max:.6g}]")
+
+def _geometry_slice(p, plane, vector, background, extent, vertical_extent,
+                    n, stride, fixed, arrow_mode):
+    """Sample the color map densely and the arrows on a separate coarse grid."""
+    A, B, X, Y, Z, labels, proj = make_grid(plane, extent, n, fixed, vertical_extent)
+    bg = np.empty_like(A)
+    for idx in np.ndindex(A.shape):
+        bg[idx] = background_value(float(X[idx]), float(Y[idx]), float(Z[idx]),
+                                   p, background, vector=vector)
+    selection = (slice(None, None, stride), slice(None, None, stride))
+    a, b = A[selection], B[selection]
+    u, v = np.empty_like(a), np.empty_like(a)
+    mode = default_arrow_mode(vector, arrow_mode)
+    for idx in np.ndindex(a.shape):
+        point = ((float(a[idx]), float(b[idx]), fixed) if plane == "xy"
+                 else (float(a[idx]), fixed, float(b[idx])))
+        vec = vector_for_plot(*point, p, vector)
+        u[idx], v[idx] = transform_vector_for_plot(vec, proj, mode)
+    return bg, a, b, u, v, labels
+
+
+def _save_plot(fig, outfile, dpi=300, formats=()):
+    """Save vector PDF and/or raster output from the same figure."""
+    path = Path(outfile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if formats:
+        stem = path.with_suffix("") if path.suffix.lower() in (".png", ".pdf", ".svg") else path
+        outputs = [stem.parent / f"{stem.name}.{suffix}" for suffix in dict.fromkeys(formats)]
+    else:
+        outputs = [path]
+    for output in outputs:
+        fig.savefig(output, dpi=dpi, bbox_inches="tight")
+        print(f"wrote {output}")
+    plt.close(fig)
+
 
 def plot_xy_xz_shared_x(
     p: Params,
@@ -554,202 +614,172 @@ def plot_xy_xz_shared_x(
     outfile: str = "xy_xz_weights.png",
     arrow_mode: str = "auto",
     quiver_scale: float | None = None,
-    figsize: tuple[float, float] = (7.0, 9.0),
+    figsize: tuple[float, float] | None = None,
     alpha: float = 0.75,
     cmap: str | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
     colorbar_label: str | None = None,
+    *,
+    compare_k: float | None = None,
+    x_extent: float | None = None,
+    y_extent: float | None = None,
+    z_extent: float | None = None,
+    dpi: int = 300,
+    formats: tuple[str, ...] = (),
 ):
-    """Plot xy and xz slices in one figure with a shared x axis and one colorbar.
+    """Render Figure 2 with the original manuscript typography and colors.
 
-    Top panel:    xy plane at z=fixed_xy.
-    Bottom panel: xz plane at y=fixed_xz.
-
-    The background is evaluated independently on both planes, but one common
-    color scale is used.  The default background is W_disk + W_jet.
+    The equatorial slice is above the meridional slice. ``compare_k`` adds
+    a left column with that exponent; the supplied model is on the right.
+    All panels share one color scale. Column titles give the exponent and profile.
+    Axes, black advection arrows, alpha=.75, and 14-pt Latin Modern text follow
+    the original figure. Optional per-axis extents allow the actual C domain.
+    Existing calls retain their square +/-extent panels.
     """
-
-    def _background_value_safe(x, y, z, vector_name):
-        try:
-            return background_value(x, y, z, p, background, vector=vector_name)
-        except TypeError:
-            return background_value(x, y, z, p, background)
-
-    def _panel_data(plane: str, vector_name: str, fixed: float):
-        A, B, X, Y, Z, labels, proj = make_grid(plane, extent, n, fixed)
-        bg = np.empty_like(A)
-        U = np.empty_like(A)
-        V = np.empty_like(A)
-
-        mode = default_arrow_mode(vector_name, arrow_mode)
-        norm_min = np.inf
-        norm_max = -np.inf
-
-        for idx in np.ndindex(A.shape):
-            x, y, z = float(X[idx]), float(Y[idx]), float(Z[idx])
-
-            vec = vector_for_plot(x, y, z, p, vector_name)
-            bg[idx] = _background_value_safe(x, y, z, vector_name)
-
-            norm = float(np.linalg.norm(vec))
-            norm_min = min(norm_min, norm)
-            norm_max = max(norm_max, norm)
-
-            U[idx], V[idx] = transform_vector_for_plot(vec, proj, mode)
-
-        return A, B, bg, U, V, labels, mode, norm_min, norm_max
-
-    Axy, Bxy, bg_xy, Uxy, Vxy, labels_xy, mode_xy, nmin_xy, nmax_xy = _panel_data(
-        "xy", vector_xy, fixed_xy
-    )
-    Axz, Bxz, bg_xz, Uxz, Vxz, labels_xz, mode_xz, nmin_xz, nmax_xz = _panel_data(
-        "xz", vector_xz, fixed_xz
-    )
-
+    validate_jet_k(p.jet_k)
+    models = [p] if compare_k is None else [replace(p, jet_k=validate_jet_k(compare_k)), p]
+    xe = extent if x_extent is None else x_extent
+    ye = extent if y_extent is None else y_extent
+    ze = extent if z_extent is None else z_extent
+    if n < 3 or stride < 1 or dpi < 1:
+        raise ValueError("n must be at least 3; stride and dpi must be positive")
+    if not all(np.isfinite(value) and value > 0 for value in (xe, ye, ze)):
+        raise ValueError("plot extents must be finite and positive")
+    panels = [
+        [_geometry_slice(model, "xy", vector_xy, background, xe, ye, n, stride, fixed_xy, arrow_mode),
+         _geometry_slice(model, "xz", vector_xz, background, xe, ze, n, stride, fixed_xz, arrow_mode)]
+        for model in models
+    ]
     if vmin is None:
-        vmin = min(float(np.nanmin(bg_xy)), float(np.nanmin(bg_xz)))
+        vmin = min(float(np.nanmin(data[0])) for pair in panels for data in pair)
     if vmax is None:
-        vmax = max(float(np.nanmax(bg_xy)), float(np.nanmax(bg_xz)))
+        vmax = max(float(np.nanmax(data[0])) for pair in panels for data in pair)
+    columns = len(models)
+    if figsize is None:
+        figsize = (7.0 if columns == 1 else 11.0, 9.0)
+    fig, axes = plt.subplots(2, columns, figsize=figsize, squeeze=False,
+                             sharex=True, sharey="row", layout="compressed",
+                             gridspec_kw={"height_ratios": [ye, ze]})
+    for column, model in enumerate(models):
+        for row, vertical_extent in enumerate((ye, ze)):
+            ax = axes[row, column]
+            bg, a, b, u, v, labels = panels[column][row]
+            im = ax.imshow(bg, origin="lower", aspect="equal", alpha=alpha,
+                           cmap=cmap or "viridis", vmin=vmin, vmax=vmax,
+                           extent=(-xe, xe, -vertical_extent, vertical_extent),
+                           interpolation="nearest", rasterized=True)
+            quiver_kwargs = dict(angles="xy", scale_units="xy", pivot="middle")
+            if quiver_scale is not None:
+                quiver_kwargs["scale"] = quiver_scale
+            ax.quiver(a, b, u, v, **quiver_kwargs)
+            ax.set_xlim(-xe, xe)
+            ax.set_ylim(-vertical_extent, vertical_extent)
+            if column == 0:
+                ax.set_ylabel(labels[1])
+            if row == 1:
+                ax.set_xlabel(labels[0])
+            else:
+                ax.tick_params(labelbottom=False)
+            if columns > 1 and row == 0:
+                profile = {1.0: "Conical", 0.58: "Parabolic", 0.5: "Parabolic"}.get(model.jet_k)
+                title = rf"$k={model.jet_k:g}$" + (f" ({profile})" if profile else "")
+                ax.set_title(title, fontsize=14, fontstyle="normal", pad=8)
+    colorbar = fig.colorbar(im, ax=axes.ravel().tolist(), pad=0.02)
+    colorbar.set_label(colorbar_label or background)
+    _save_plot(fig, outfile, dpi=dpi, formats=formats)
+    print("jet_k=" + ", ".join(f"{model.jet_k:g}" for model in models))
 
-    fig, (ax_xy, ax_xz) = plt.subplots(
-        2,
-        1,
-        figsize=figsize,
-        sharex=True,
-        constrained_layout=True,
-    )
 
-    im_kwargs = dict(
-        origin="lower",
-        extent=(-extent, extent, -extent, extent),
-        aspect="equal",
-        alpha=alpha,
-        vmin=vmin,
-        vmax=vmax,
-    )
-    if cmap is not None:
-        im_kwargs["cmap"] = cmap
-
-    im = ax_xy.imshow(bg_xy, **im_kwargs)
-    ax_xz.imshow(bg_xz, **im_kwargs)
-
-    s = max(1, int(stride))
-    quiver_kwargs = {
-        "angles": "xy",
-        "scale_units": "xy",
-        "pivot": "middle",
-    }
-    if quiver_scale is not None:
-        quiver_kwargs["scale"] = quiver_scale
-
-    ax_xy.quiver(
-        Axy[::s, ::s],
-        Bxy[::s, ::s],
-        Uxy[::s, ::s],
-        Vxy[::s, ::s],
-        **quiver_kwargs,
-    )
-    ax_xz.quiver(
-        Axz[::s, ::s],
-        Bxz[::s, ::s],
-        Uxz[::s, ::s],
-        Vxz[::s, ::s],
-        **quiver_kwargs,
-    )
-
-    ax_xy.set_ylabel(labels_xy[1])
-    ax_xz.set_xlabel(labels_xz[0])
-    ax_xz.set_ylabel(labels_xz[1])
-
-    ax_xy.tick_params(labelbottom=False)
-
-    cbar = fig.colorbar(im, ax=(ax_xy, ax_xz), pad=0.02)
-    cbar.set_label(colorbar_label or background)
-
-    fig.savefig(outfile, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-
-    print(f"wrote {outfile}")
-    print(
-        f"xy: vector={vector_xy}, arrow_mode={mode_xy}, "
-        f"|vector| range=[{nmin_xy:.6g}, {nmax_xy:.6g}]"
-    )
-    print(
-        f"xz: vector={vector_xz}, arrow_mode={mode_xz}, "
-        f"|vector| range=[{nmin_xz:.6g}, {nmax_xz:.6g}]"
-    )
+def plot_jet_width_comparison(p, compare_k, outfile, extent=50.0, dpi=300, formats=()):
+    """Optional width diagnostic using the same model and manuscript style."""
+    models = [replace(p, jet_k=validate_jet_k(compare_k)), p]
+    z = np.linspace(0.0, extent, 501)
+    fig, ax = plt.subplots(figsize=(7.0, 4.0), layout="constrained")
+    for model, color in zip(models, ("#6a3d9a", "#007f82")):
+        ax.plot(z, [jet_radius(value, model) for value in z], color=color,
+                lw=2, label=rf"$k={model.jet_k:g}$")
+    ax.set(xlabel=r"$|z_{\rm s}|/M$", ylabel=r"$R_{\rm j}/M$", xlim=(0, extent))
+    ax.legend()
+    _save_plot(fig, outfile, dpi=dpi, formats=formats)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--layout", choices=["single", "xy-xz"], default="single",
+                    help="single slice or the manuscript's stacked equatorial/meridional panels")
     ap.add_argument("--params", default=None, help="HDF5 parameter file with /params datasets")
+    ap.add_argument("--jet-k", type=float, default=None,
+                    help="override the jet collimation exponent (default 1; e.g. 0.58)")
+    ap.add_argument("--compare-k", type=float, default=None,
+                    help="add a left comparison column in the xy-xz layout")
     ap.add_argument("--plane", choices=["xy", "xz", "yz"], default="xz")
     ap.add_argument("--vector", choices=["principal", "disk1", "disk2", "disk3", "jet1", "jet2", "jet3", "diskv", "jetv"], default="principal")
     ap.add_argument("--background", choices=["weights", "disk_weight", "jet_weight", "detlambda", "omega",
                                              "disk_speed", "jet_speed", "vector_norm"], default="weights")
     ap.add_argument("--extent", type=float, default=50.0)
-    ap.add_argument("--n", type=int, default=81)
-    ap.add_argument("--stride", type=int, default=5)
+    ap.add_argument("--x-extent", type=float, default=None, help="xy-xz horizontal extent; defaults to --extent")
+    ap.add_argument("--y-extent", type=float, default=None, help="xy panel vertical extent; defaults to --extent")
+    ap.add_argument("--z-extent", type=float, default=None, help="xz panel vertical extent; defaults to --extent")
+    ap.add_argument("--n", type=int, default=None, help="samples per axis; 81 for single, 321 for xy-xz")
+    ap.add_argument("--stride", type=int, default=None,
+                    help="arrow subsampling; 5 for single, about 17 arrows/axis for xy-xz")
     ap.add_argument("--fixed", type=float, default=0.0, help="fixed coordinate for the missing direction")
     ap.add_argument("--arrow-mode", choices=["auto", "raw", "unit3d", "unit2d", "none"], default="auto",
                     help="quiver scaling: raw magnitude, full-3D unit vectors, projected-2D unit vectors, or auto")
     ap.add_argument("--quiver-scale", type=float, default=None,
                     help="matplotlib quiver scale. Smaller values make arrows longer. Default lets matplotlib choose.")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--formats", nargs="+", choices=["png", "pdf", "svg"], default=None,
+                    help="save the same figure in these formats using the --out stem")
+    ap.add_argument("--dpi", type=int, default=300, help="raster resolution; PDF text and arrows remain vector")
+    ap.add_argument("--width-out", default=None,
+                    help="optional jet-width comparison output; requires --compare-k")
     args = ap.parse_args()
 
-    p = read_params(args.params)
+    if args.layout != "xy-xz" and (args.compare_k is not None or args.width_out is not None
+                                  or any(v is not None for v in (args.x_extent, args.y_extent, args.z_extent))):
+        ap.error("comparison and per-axis extent options require --layout xy-xz")
+    if args.width_out is not None and args.compare_k is None:
+        ap.error("--width-out requires --compare-k")
+    args.n = args.n if args.n is not None else (321 if args.layout == "xy-xz" else 81)
+    args.stride = args.stride if args.stride is not None else (max(1, (args.n - 1) // 16) if args.layout == "xy-xz" else 5)
+    if args.n < 3 or args.stride < 1 or args.dpi < 1:
+        ap.error("n must be at least 3; stride and dpi must be positive")
+    for value in (args.extent, args.x_extent, args.y_extent, args.z_extent):
+        if value is not None and (not np.isfinite(value) or value <= 0):
+            ap.error("plot extents must be finite and positive")
+    try:
+        p = read_params(args.params)
+        if args.jet_k is not None:
+            p.jet_k = validate_jet_k(args.jet_k)
+        if args.compare_k is not None:
+            validate_jet_k(args.compare_k)
+    except ValueError as exc:
+        ap.error(str(exc))
+    # This command writes files; importing the module still permits interactive use.
+    plt.switch_backend("Agg")
     out = args.out
     if out is None:
         stem = Path(args.params).stem if args.params else "defaults"
-        out = f"{stem}_{args.plane}_{args.vector}_{args.background}.png"
-    plot_preview(p, args.plane, args.vector, args.background, args.extent, args.n, args.stride, args.fixed,
-                 out, args.arrow_mode, args.quiver_scale)
+        out = "xy_xz_weights.png" if args.layout == "xy-xz" else f"{stem}_{args.plane}_{args.vector}_{args.background}.png"
+    formats = tuple(args.formats or ())
+    if args.layout == "xy-xz":
+        plot_xy_xz_shared_x(
+            p, background=args.background, extent=args.extent, n=args.n,
+            stride=args.stride, fixed_xy=args.fixed, fixed_xz=args.fixed,
+            outfile=out, arrow_mode=args.arrow_mode, quiver_scale=args.quiver_scale,
+            compare_k=args.compare_k, x_extent=args.x_extent,
+            y_extent=args.y_extent, z_extent=args.z_extent,
+            dpi=args.dpi, formats=formats,
+        )
+        if args.width_out is not None:
+            plot_jet_width_comparison(p, args.compare_k, args.width_out,
+                                      extent=args.z_extent or args.extent,
+                                      dpi=args.dpi, formats=formats)
+    else:
+        plot_preview(p, args.plane, args.vector, args.background, args.extent, args.n, args.stride, args.fixed,
+                     out, args.arrow_mode, args.quiver_scale, dpi=args.dpi, formats=formats)
 
 
 if __name__ == "__main__":
     main()
-
-
-'''
-Useful vector choices are:
-
-principal   largest spatial eigenvector of Lambda
-disk1       long torus-surface disk correlation direction
-disk2       secondary torus-surface direction
-disk3       torus cross-section normal
-jet1        helical/poloidal jet direction
-jet2        jet polar direction
-jet3        complementary helical jet direction
-diskv       disk advection velocity
-jetv        jet advection velocity
-
-Useful backgrounds are:
-
-weights       W_disk + W_jet
-disk_weight   torus weight only
-jet_weight    jet weight only
-detlambda     |Lambda|^{1/4}
-omega         disk angular velocity
-
-python3 - <<'PY'
-import inoisy4d_geometry_preview as g
-
-p = g.read_params(None)  # or g.read_params("params_torusjet.h5")
-
-g.plot_xy_xz_shared_x(
-    p,
-    vector_xy="diskv",
-    vector_xz="jetv",
-    background="weights",
-    extent=50.0,
-    n=81,
-    stride=5,
-    fixed_xy=0.0,
-    fixed_xz=0.0,
-    arrow_mode="auto",
-    quiver_scale=None,
-    outfile="xy_xz_weights.png",
-)
-PY
-'''
