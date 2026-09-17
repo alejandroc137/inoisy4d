@@ -43,7 +43,7 @@ _______
 | `src/param_inoisy4d.c` | Physical/model parameters, Kerr disk velocity, jet velocity, torus/jet correlation tensors, SPDE coefficients, source normalization, and HDF5 parameter I/O. |
 | `src/hdf5_utils.c` | Thin HDF5 convenience layer. |
 | `include/*.h` | C headers for the modules above. |
-| `tools/inoisy4d_geometry_preview.py` | Python preview of the velocity field, torus/jet weights, triads, and local correlation tensor. |
+| `tools/inoisy4d_geometry_preview.py` | Python preview of the velocity field, torus/jet weights, triads, and local correlation tensor, including paired manuscript panels and collimation comparisons. |
 | `tools/write_params_torusjet.py` | Writes an HDF5 `/params` file usable by both the C code and Python preview. |
 | `tools/inoisy4d_to_visit_emissivity.py` | Converts C-code output into a standardized/lognormal emissivity HDF5+XDMF pair for VisIt. |
 | `tools/inoisy4d_disk_trajectory_diagnostic.py` | Integrates diagnostic trajectories of the prescribed disk coordinate velocity. |
@@ -198,7 +198,8 @@ All are optional; missing datasets retain the compiled-in defaults from
 | `torus_ar` | float | `8.0` | Torus radial width. |
 | `torus_az` | float | `5.0` | Torus vertical width. |
 | `jet_width` | float | `2.5` | Jet core width at `z=0`. |
-| `jet_opening` | float | `0.30` | Linear opening coefficient in `R_j(z)=jet_width+jet_opening*|z|`. |
+| `jet_opening` | float | `0.30` | Widening coefficient in `R_j(z)=jet_width+jet_opening*|z|^jet_k`, in M units. |
+| `jet_k` | float | `1.0` | Finite, positive jet collimation exponent; `1` is conical, `0.5` is asymptotically parabolic, and `0.58` gives an M87-like scaling. |
 | `blend_floor` | float | `1.0e-4` | Small floor added to disk/jet weights in composite mode. |
 | `normalize_weights` | int | `0` | If `0`, weights localize the raw field.  If `1`, weights interpolate the tensor orientation/scale without changing the total weight as strongly. |
 | `spin` | float | `0.94` | Kerr spin `a`, clamped to `[-0.999999,0.999999]`. |
@@ -210,6 +211,26 @@ All are optional; missing datasets retain the compiled-in defaults from
 | `enforce_timelike` | int | `1` | Clamps `Omega` into the local Kerr timelike interval when needed. |
 | `jet_vpol` | float | `0.5` | Poloidal/radial speed in the simple jet advection model. |
 | `jet_omega` | float | `0.0` | Rigid angular velocity in the simple jet advection model. |
+
+### Jet Collimation
+
+All code coordinates and widths are in units of M. The jet window uses
+
+```text
+R_j/M = jet_width + jet_opening * (|z_s|/M)^jet_k
+W_j   = exp[-rho_s^2 / (2 R_j^2)].
+```
+
+The reference length is fixed to M, so `jet_opening` stays dimensionless when
+`jet_k` changes. Missing `jet_k` datasets retain the legacy conical default
+`1.0`; nonfinite and nonpositive exponents are rejected. The finite core width
+at the equatorial plane is preserved. The unsmoothed fractional power is
+continuous there but has an unbounded derivative for `0 < jet_k < 1`.
+
+The exponent changes the covariance window and the optional deterministic jet
+emissivity envelope. The independently prescribed radial jet advection and
+helical triad are unchanged. Choosing a parabolic window does not redirect
+the velocity along that window's contours.
 
 ### Synchronization Note
 
@@ -322,16 +343,23 @@ cluster time on a full HYPRE solve.
 | Option | Default | Meaning |
 | --- | ---: | --- |
 | `--params <file>` | none | Optional HDF5 file with `/params` datasets. |
-| `--plane {xy,xz,yz}` | `xz` | Slice to plot. |
-| `--vector <name>` | `principal` | Vector field to draw.  Choices: `principal`, `disk1`, `disk2`, `disk3`, `jet1`, `jet2`, `jet3`, `diskv`, `jetv`. |
+| `--jet-k <float>` | `/params` or `1.0` | Override the jet collimation exponent. |
+| `--layout {single,xy-xz}` | `single` | One selected slice, or paired equatorial/meridional manuscript panels. |
+| `--compare-k <float>` | none | In `xy-xz` layout, add this exponent in the left column and show `--jet-k` on the right. |
+| `--plane {xy,xz,yz}` | `xz` | Slice to plot in `single` layout. |
+| `--vector <name>` | `principal` | Vector field in `single` layout. Choices: `principal`, `disk1`, `disk2`, `disk3`, `jet1`, `jet2`, `jet3`, `diskv`, `jetv`. The `xy-xz` layout uses disk and jet advection. |
 | `--background <name>` | `weights` | Scalar background.  Choices: `weights`, `disk_weight`, `jet_weight`, `detlambda`, `omega`, `disk_speed`, `jet_speed`, `vector_norm`. |
-| `--extent <float>` | `50.0` | Plot range `[-extent,extent]` in both displayed coordinates. |
-| `--n <int>` | `81` | Number of sample points per displayed direction. |
-| `--stride <int>` | `5` | Quiver subsampling stride. |
+| `--extent <float>` | `50.0` | Symmetric plot extent; fallback for the per-axis extents in `xy-xz` layout. |
+| `--x-extent`, `--y-extent`, `--z-extent` | `--extent` | Per-axis symmetric extents for `xy-xz` layout. |
+| `--n <int>` | `81` / `321` | Number of sample points per displayed direction for `single` / `xy-xz` layout. |
+| `--stride <int>` | `5` / `max(1,(n-1)//16)` | Quiver subsampling stride for `single` / `xy-xz` layout. |
 | `--fixed <float>` | `0.0` | Fixed coordinate not shown in the selected plane. |
 | `--arrow-mode <mode>` | `auto` | `raw`, `unit3d`, `unit2d`, `none`, or `auto`.  `auto` uses raw arrows for velocities and projected unit arrows for basis vectors. |
 | `--quiver-scale <float>` | none | Passed to Matplotlib `quiver`; smaller values make arrows longer. |
 | `--out <file>` | auto | Output image name. |
+| `--formats <format> ...` | output suffix | Save the same output stem in the requested formats, e.g. `png pdf`. |
+| `--dpi <int>` | `300` | Resolution of exported raster images. |
+| `--width-out <file>` | none | Also save a jet-width comparison; requires `--layout xy-xz --compare-k`. |
 
 ### Geometry Preview Examples
 
@@ -370,12 +398,35 @@ python3 tools/inoisy4d_geometry_preview.py \
   --out xz_principal_detlambda.png
 ```
 
+The `xy-xz` layout uses the manuscript styling: 14-point Latin Modern text
+rendered with LaTeX, weight images with opacity `0.75`, and black disk/jet
+advection arrows in the equatorial/meridional panels. Comparison columns share
+one color scale and label the columns `k=1 (Conical)` and `k=0.58 (Parabolic)`,
+with upright profile names; there are no white width contours or explanatory footers.
+
+To make a two-column comparison at the C grid extents, keeping all parameters
+except `jet_k` fixed:
+
+```bash
+python3 tools/inoisy4d_geometry_preview.py \
+  --params params_k058.h5 --layout xy-xz \
+  --jet-k 0.58 --compare-k 1 \
+  --x-extent 30 --y-extent 30 --z-extent 50 \
+  --n 321 --stride 20 --formats png pdf --dpi 300 \
+  --out xy_xz_weights.png
+```
+
+For one column containing only the `k=0.58` equatorial/meridional panels,
+omit `--compare-k 1` and select a distinct output name. Add
+`--width-out jet_width_comparison.png` to the comparison command to export
+the two width curves using the same formats and resolution.
+
 ## Python Tool: Parameter File Writer
 
-`tools/write_params_torusjet.py` writes:
+`tools/write_params_torusjet.py` writes by default in the current directory:
 
 ```text
-tools/params_torusjet.h5
+params_torusjet.h5
 ```
 
 with a `/params` group containing the floating-point and integer datasets read
@@ -385,8 +436,27 @@ by the C code and the preview script.  Run it with:
 python3 tools/write_params_torusjet.py
 ```
 
-This script currently has no command-line options; edit the dictionaries
-`params_f64` and `params_i32` in the script to change its defaults.
+Use `--jet-k` and `--out` to select an exponent and output path:
+
+```bash
+python3 tools/write_params_torusjet.py --jet-k 0.58 --out params_k058.h5
+python3 tools/inoisy4d_geometry_preview.py --params params_k058.h5 \
+  --plane xz --vector jetv --background weights --out xz_k058.png
+```
+
+The resulting file can also be passed to the C solver with `-params`.
+Edit the dictionaries `params_f64` and `params_i32` for other model parameters.
+
+Use the geometry preview's `--layout xy-xz --compare-k 1` options above to
+compare this parameter file with the conical case. The preview reads the
+parameter file without modifying it; its CLI exponent overrides affect only
+the exported figures.
+
+Run the focused parameter and geometry regressions with:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_jet_collimation.py'
+```
 
 ## Python Tool: VisIt Emissivity Export
 
@@ -435,6 +505,7 @@ Useful options include:
 | `--jdisk0`, `--jjet0` | `/params` or `1.0` | Disk/jet envelope normalizations. |
 | `--torus-r0`, `--torus-ar`, `--torus-az` | `/params` or `12,8,5` | Torus envelope parameters. |
 | `--jet-width`, `--jet-opening` | `/params` or `2.5,0.30` | Jet envelope parameters. |
+| `--jet-k` | `/params` or `1.0` | Jet envelope collimation exponent; must be finite and positive. |
 | `--jet-side {both,up,down}` | `both` | Two-sided or one-sided jet envelope. |
 | `--write-components` | off | Also write `j_disk` and `j_jet`. |
 | `--write-envelopes` | off | Also write deterministic envelopes. |
@@ -494,6 +565,7 @@ The parameter writer uses the dictionaries in `tools/write_params_torusjet.py`.
 | `torus_az` | `5.0` | `5.0` |
 | `jet_width` | `2.5` | `2.5` |
 | `jet_opening` | `0.30` | `0.30` |
+| `jet_k` | `1.0` | `1.0` |
 | `blend_floor` | `1.0e-4` | `1.0e-4` |
 | `normalize_weights` | `0` | `0` |
 | `spin` | `0.94` | `0.94` |
